@@ -39,3 +39,14 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Photos are stored in Vercel Blob - do not commit to git
+public/photos/**/*.jpg
+public/photos/**/*.jpeg
+public/photos/**/*.JPG
+public/photos/**/*.png
+public/photos/**/*.webp
+public/photos/**/*.avif
+public/photos/**/*.heic
+public/photos/**/*.HEIC
+.env.local

@@ -1,5 +1,4 @@
-import fs from 'fs';
-import path from 'path';
+import photosData from '@/data/photos.json';
 
 export type AlbumType = 'location' | 'memory';
 
@@ -124,14 +123,7 @@ const ALBUM_METADATA: Partial<Album>[] = [
 ];
 
 export function getAlbums(): Album[] {
-  const photosDir = path.join(process.cwd(), 'public', 'photos');
-  let activeFolders: string[] = [];
-  try {
-    activeFolders = fs.readdirSync(photosDir).filter(f => !f.startsWith('.'));
-  } catch (e) {
-    console.error("Could not read photos directory", e);
-  }
-
+  const activeFolders = Object.keys(photosData);
   const generatedAlbums: Album[] = [];
 
   for (const folder of activeFolders) {

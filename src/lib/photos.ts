@@ -1,6 +1,4 @@
-import fs from 'fs';
-import path from 'path';
-import sizeOf from 'image-size';
+import photosData from '@/data/photos.json';
 
 export interface Photo {
   src: string;
@@ -9,85 +7,22 @@ export interface Photo {
   alt: string;
 }
 
-const SUPPORTED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.webp', '.avif'];
-
-function getPhotoDimensions(filePath: string) {
-  try {
-    const dimensions = sizeOf(fs.readFileSync(filePath));
-    return dimensions;
-  } catch (error) {
-    console.error(`Failed to get dimensions for ${filePath}:`, error);
-    return null;
-  }
-}
-
 export function getAlbumPhotos(slug: string): Photo[] {
-  const directoryPath = path.join(process.cwd(), 'public', 'photos', slug);
+  const data = photosData as Record<string, Photo[]>;
+  const photos = data[slug] || [];
   
-  if (!fs.existsSync(directoryPath)) {
-    return [];
-  }
-
-  try {
-    const files = fs.readdirSync(directoryPath);
-    const photos = files
-      .filter(file => {
-        const ext = path.extname(file).toLowerCase();
-        return SUPPORTED_EXTENSIONS.includes(ext) && !file.toLowerCase().startsWith('cover.');
-      })
-      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }))
-      .map(file => {
-        const filePath = path.join(directoryPath, file);
-        const dimensions = getPhotoDimensions(filePath);
-        
-        return {
-          src: `/photos/${slug}/${file}`,
-          width: dimensions?.width || 1000,
-          height: dimensions?.height || 1000,
-          alt: file.replace(path.extname(file), '')
-        };
-      });
-
-    return photos;
-  } catch (err) {
-    console.error(`Error reading directory ${directoryPath}:`, err);
-    return [];
-  }
+  // Filter out the cover image from the main gallery sequence if it exists
+  return photos.filter(p => !p.src.toLowerCase().includes('/cover.'));
 }
 
 export function getAlbumCover(slug: string): string | null {
-  const directoryPath = path.join(process.cwd(), 'public', 'photos', slug);
+  const data = photosData as Record<string, Photo[]>;
+  const photos = data[slug] || [];
   
-  if (!fs.existsSync(directoryPath)) {
-    return null;
-  }
+  if (photos.length === 0) return null;
 
-  try {
-    const files = fs.readdirSync(directoryPath);
-    const coverFile = files.find(file => {
-      const ext = path.extname(file).toLowerCase();
-      return SUPPORTED_EXTENSIONS.includes(ext) && file.toLowerCase().startsWith('cover.');
-    });
+  const cover = photos.find(p => p.src.toLowerCase().includes('/cover.'));
+  if (cover) return cover.src;
 
-    if (coverFile) {
-      return `/photos/${slug}/${coverFile}`;
-    }
-
-    // Fallback to first image
-    const validPhotos = files
-      .filter(file => {
-        const ext = path.extname(file).toLowerCase();
-        return SUPPORTED_EXTENSIONS.includes(ext);
-      })
-      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
-
-    if (validPhotos.length > 0) {
-      return `/photos/${slug}/${validPhotos[0]}`;
-    }
-
-  } catch (err) {
-    console.error(`Error reading cover in ${directoryPath}:`, err);
-  }
-
-  return null;
+  return photos[0].src;
 }
