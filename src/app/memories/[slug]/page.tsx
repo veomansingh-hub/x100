@@ -1,7 +1,7 @@
 import { albums } from '@/data/albums';
 import { notFound } from 'next/navigation';
-import { ImmersivePhotoViewerWrapper } from '@/components/ImmersivePhotoViewerWrapper';
 import { getAlbumPhotos } from '@/lib/photos';
+import { AlbumContainer } from '@/components/AlbumContainer';
 
 export async function generateStaticParams() {
   return albums
@@ -11,19 +11,15 @@ export async function generateStaticParams() {
     }));
 }
 
-export default async function MemoryImmersivePage({ params }: { params: Promise<{ slug: string }> }) {
+export default async function MemoryAlbumPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
   const album = albums.find((a) => a.slug === slug && a.type === 'memory');
 
   if (!album) {
-    return notFound();
+    notFound();
   }
 
   const photos = getAlbumPhotos(slug);
 
-  return (
-    <main className="bg-black min-h-screen">
-      <ImmersivePhotoViewerWrapper photos={photos} title={album.title} />
-    </main>
-  );
+  return <AlbumContainer album={album} photos={photos} />;
 }
