@@ -4,7 +4,7 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import YouTube, { YouTubeProps } from 'react-youtube';
 import { AnimatePresence, motion } from 'framer-motion';
 
-const LINES = [
+export const LYRIC_LINES = [
   { time: 33, duration: 4, text: "Did I drive you away?" },
   { time: 40, duration: 4, text: "I know what you'll say" },
   { time: 48, duration: 5, text: "You say, \"Oh, sing one we know\"" },
@@ -34,7 +34,6 @@ const LINES = [
 
 export function BackgroundMusic() {
   const [isPlaying, setIsPlaying] = useState(false);
-  const [currentTime, setCurrentTime] = useState(0);
   const playerRef = useRef<any>(null);
   const animationRef = useRef<number | null>(null);
 
@@ -53,7 +52,7 @@ export function BackgroundMusic() {
 
   const onReady: YouTubeProps['onReady'] = (event) => {
     playerRef.current = event.target;
-    playerRef.current.setVolume(30); 
+    playerRef.current.setVolume(20); 
   };
 
   const onStateChange: YouTubeProps['onStateChange'] = (event) => {
@@ -71,7 +70,10 @@ export function BackgroundMusic() {
     
     const updateTime = () => {
       if (playerRef.current && playerRef.current.getCurrentTime) {
-        setCurrentTime(playerRef.current.getCurrentTime());
+        const time = playerRef.current.getCurrentTime();
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('music-time', { detail: time }));
+        }
       }
       animationRef.current = requestAnimationFrame(updateTime);
     };
@@ -96,23 +98,6 @@ export function BackgroundMusic() {
     }
   };
 
-  // Process all words once
-  const allWords = useMemo(() => {
-    const words: { text: string; start: number; end: number }[] = [];
-    LINES.forEach(line => {
-      const lineWords = line.text.split(' ');
-      const dur = line.duration / lineWords.length;
-      lineWords.forEach((w, i) => {
-        words.push({
-          text: w,
-          start: line.time + (i * dur),
-          end: line.time + ((i + 1) * dur)
-        });
-      });
-    });
-    return words;
-  }, []);
-
   return (
     <>
       <div className="hidden pointer-events-none absolute w-0 h-0 overflow-hidden">
@@ -126,46 +111,10 @@ export function BackgroundMusic() {
       
       <button 
         onClick={togglePlay}
-        className="fixed bottom-12 left-12 md:bottom-24 md:left-24 z-50 text-xs md:text-sm tracking-widest uppercase opacity-40 hover:opacity-100 transition-opacity mix-blend-difference text-white"
+        className="fixed bottom-12 left-12 md:bottom-24 md:left-24 z-50 text-xs md:text-sm tracking-widest uppercase opacity-40 hover:opacity-100 transition-opacity text-foreground"
       >
         {isPlaying ? 'Pause Music' : 'Play Music'}
       </button>
-
-      {/* Full Circle Orbiting Lyrics */}
-      <div 
-        className="fixed inset-0 pointer-events-none flex items-center justify-center z-0 overflow-hidden mix-blend-difference"
-        style={{ perspective: '1200px' }}
-      >
-        <motion.div
-          animate={{ rotateZ: [0, 360] }}
-          transition={{ duration: 180, ease: 'linear', repeat: Infinity }}
-          className="absolute w-[900px] h-[900px] lg:w-[1400px] lg:h-[1400px]"
-          style={{ transformStyle: 'preserve-3d', rotateX: 75 }}
-        >
-          <svg viewBox="0 0 1000 1000" className="w-full h-full">
-            <defs>
-              <path id="fullOrbit" d="M 500, 100 a 400,400 0 1,1 0,800 a 400,400 0 1,1 0,-800" />
-            </defs>
-            <text style={{ fontSize: '18px', letterSpacing: '0.1em' }} className="font-serif uppercase">
-              <textPath href="#fullOrbit" textLength="2500" lengthAdjust="spacing">
-                {allWords.map((wordObj, idx) => {
-                  const isHighlight = currentTime >= wordObj.start && currentTime < wordObj.end;
-                  return (
-                    <tspan 
-                      key={idx}
-                      className={`transition-colors duration-200 ${
-                        isHighlight ? 'fill-white font-bold' : 'fill-neutral-700'
-                      }`}
-                    >
-                      {wordObj.text}{" "}
-                    </tspan>
-                  );
-                })}
-              </textPath>
-            </text>
-          </svg>
-        </motion.div>
-      </div>
     </>
   );
 }
