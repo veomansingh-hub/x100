@@ -2,183 +2,256 @@
 
 import React, { useEffect, useRef, useState, useMemo } from 'react';
 import * as THREE from 'three';
-import GlobeGL, { GlobeMethods } from 'react-globe.gl';
 import * as topojson from 'topojson-client';
 import { Album } from '@/data/albums';
 import { siteConfig } from '@/data/config';
 import Link from 'next/link';
-import { LYRIC_LINES } from './BackgroundMusic';
+import { useMusicContext } from '@/contexts/MusicContext';
 import dynamic from 'next/dynamic';
 
-const Globe = dynamic(() => import('react-globe.gl'), { ssr: false });
+const GlobeGL = dynamic(() => import('react-globe.gl'), { ssr: false });
 
-// Calculate continuous time->angle mapping for smooth SVG rotation
-const totalChars = LYRIC_LINES.reduce((sum, l) => sum + l.text.length + 3, 0);
-let running = 0;
-const lineAngles = LYRIC_LINES.map(l => {
-  const startAngle = (running / totalChars) * 1080; // 3 loops = 1080 degrees
-  running += l.text.length + 3;
-  const endAngle = (running / totalChars) * 1080;
-  return { startAngle, endAngle };
-});
+// ─── Orbital planes configuration ───────────────────────────────────────────
+// Each orbit gets a tilt (inclination) and a phase offset so lines spread out
+const ORBITAL_PLANES = [
+  { tilt: 25 * (Math.PI / 180), phaseOffset: 0,           direction: 1  },
+  { tilt: 40 * (Math.PI / 180), phaseOffset: Math.PI/4,   direction: -1 },
+  { tilt: 55 * (Math.PI / 180), phaseOffset: Math.PI/2,   direction: 1  },
+  { tilt: 30 * (Math.PI / 180), phaseOffset: 3*Math.PI/4, direction: -1 },
+  { tilt: 45 * (Math.PI / 180), phaseOffset: Math.PI,     direction: 1  },
+];
 
-const timeMap: {time: number, angle: number}[] = [];
-LYRIC_LINES.forEach((l, i) => {
-  timeMap.push({ time: l.start, angle: lineAngles[i].startAngle });
-  timeMap.push({ time: l.end, angle: lineAngles[i].endAngle });
-});
-
-function getAngleForTime(t: number) {
-  if (t <= timeMap[0].time) return timeMap[0].angle;
-  if (t >= timeMap[timeMap.length-1].time) return timeMap[timeMap.length-1].angle;
-  for (let i = 0; i < timeMap.length - 1; i++) {
-    if (t >= timeMap[i].time && t <= timeMap[i+1].time) {
-      const p = (t - timeMap[i].time) / (timeMap[i+1].time - timeMap[i].time);
-      return timeMap[i].angle + p * (timeMap[i+1].angle - timeMap[i].angle);
-    }
-  }
-  return 0;
-}
+// Lines visible in the active window
+const WINDOW_SIZE = 5; // previous + active + next 3
+const WINDOW_BACK = 1; // how many before active
 
 export default function GlobeComponent({ albums }: { albums: Album[] }) {
+  const { currentTrack } = useMusicContext();
+
   const globeEl = useRef<any>(undefined);
   const globeContainerRef = useRef<HTMLDivElement>(null);
-  const svgRef = useRef<SVGSVGElement>(null);
-  const wordRefs = useRef<(SVGTSpanElement | null)[]>([]);
+  const lyricRefs = useRef<(HTMLDivElement | null)[]>([]);
 
   const [landPolygons, setLandPolygons] = useState<any[]>([]);
   const [globeSize, setGlobeSize] = useState({ width: 800, height: 800 });
-  const [activeAlbumId, setActiveAlbumId] = useState<string | null>(null);
   const [rings, setRings] = useState<any[]>([]);
   const [arcs, setArcs] = useState<any[]>([]);
 
   const locations = albums.filter(a => a.type === 'location' && a.lat && a.lng);
 
+  // ─── Resize observer ──────────────────────────────────────────────────────
   useEffect(() => {
     if (!globeContainerRef.current) return;
-    const obs = new ResizeObserver((entries) => {
-      for (let entry of entries) {
-        setGlobeSize({ width: entry.contentRect.width, height: entry.contentRect.height });
+    const obs = new ResizeObserver(entries => {
+      for (const e of entries) {
+        setGlobeSize({ width: e.contentRect.width, height: e.contentRect.height });
       }
     });
     obs.observe(globeContainerRef.current);
     return () => obs.disconnect();
   }, []);
 
+  // ─── Load geo data ───────────────────────────────────────────────────────
   useEffect(() => {
     import('@/data/land-110m.json').then((topo: any) => {
       const data = topo.default || topo;
       const polygons = (topojson.feature(data, data.objects.land as any) as any).features;
       setLandPolygons(polygons);
-    }).catch(e => console.error("TopoJSON error:", e));
+    });
 
     const newArcs = [];
     for (let i = 0; i < locations.length - 1; i++) {
       newArcs.push({
-        startLat: locations[i].lat!,
-        startLng: locations[i].lng!,
-        endLat: locations[i+1].lat!,
-        endLng: locations[i+1].lng!,
-        color: ['#cc0000', '#ff0000']
+        startLat: locations[i].lat!, startLng: locations[i].lng!,
+        endLat: locations[i + 1].lat!, endLng: locations[i + 1].lng!,
+        color: ['#cc0000', '#ff0000'],
       });
     }
     setArcs(newArcs);
   }, [albums]);
 
+  // ─── Globe setup ──────────────────────────────────────────────────────────
   const polygonMaterial = useMemo(() => new THREE.MeshBasicMaterial({
-    color: '#ffffff',
-    opacity: 0.8,
-    transparent: true,
-    depthWrite: false
+    color: '#ffffff', opacity: 0.8, transparent: true, depthWrite: false,
   }), []);
 
   useEffect(() => {
     if (!globeEl.current) return;
     const g = globeEl.current;
-    
     g.controls().autoRotate = true;
     g.controls().autoRotateSpeed = 0.5;
     g.controls().enableDamping = true;
     g.controls().dampingFactor = 0.05;
     g.controls().enableZoom = false;
-    
     g.pointOfView({ lat: 20, lng: 70, altitude: 2.4 });
   }, [globeEl.current]);
 
-  // Synchronized Lyric Engine
+  // ─── LYRIC ORBIT ENGINE ───────────────────────────────────────────────────
+  // This runs on every music-time event (60fps via rAF in MusicContext).
+  // It calculates 3D positions in orbital space, projects them to 2D screen coords,
+  // and directly mutates the DOM refs — zero React re-renders.
   useEffect(() => {
-    let animationFrameId: number;
-    let baselineRotation = 0; // Slowly drifts when music is paused
+    const handleTime = (e: CustomEvent) => {
+      const { time, trackId } = e.detail;
+      const g = globeEl.current;
+      const container = globeContainerRef.current;
+      if (!g || !container) return;
 
-    const handleTime = (e: any) => {
-      const t = e.detail;
-      if (!svgRef.current) return;
-
-      // Calculate perfect SVG rotation to pin active lyric to top right (45deg)
-      const currentPhysicalAngle = getAngleForTime(t);
-      const targetRotation = 45 - currentPhysicalAngle;
-      
-      svgRef.current.style.transform = `rotate(${targetRotation}deg)`;
-
-      // Determine active line window (show about 5 lines)
-      let activeLineIdx = LYRIC_LINES.findIndex(l => t >= l.start && t <= l.end);
-      if (activeLineIdx === -1) {
-        activeLineIdx = LYRIC_LINES.findIndex(l => l.start > t);
-        if (activeLineIdx === -1) activeLineIdx = LYRIC_LINES.length - 1;
+      const lyrics = currentTrack.lyrics;
+      if (!lyrics || lyrics.length === 0) {
+        lyricRefs.current.forEach(el => { if (el) el.style.opacity = '0'; });
+        return;
       }
 
-      // Update word stylings dynamically without React re-renders!
-      let flatWordIdx = 0;
-      for (let i = 0; i < LYRIC_LINES.length; i++) {
-        const line = LYRIC_LINES[i];
-        const isLineActive = t >= line.start && t <= line.end;
-        
-        // Window clipping: prevent overlapping text loops from showing
-        const distance = Math.abs(i - activeLineIdx);
-        const lineOpacity = distance <= 3 ? 1 : 0;
+      // Reset if track changed or time is -1
+      if (trackId !== currentTrack.id || time < 0) {
+        lyricRefs.current.forEach(el => { if (el) el.style.opacity = '0'; });
+        return;
+      }
 
-        for (let j = 0; j < line.words.length; j++) {
-          const w = line.words[j];
-          const el = wordRefs.current[flatWordIdx];
-          flatWordIdx++;
-          
-          if (!el) continue;
+      // Find active line
+      const camera = g.camera();
+      const r = g.getGlobeRadius?.() ?? 100;
+      const rect = container.getBoundingClientRect();
+      const W = rect.width;
+      const H = rect.height;
 
-          if (lineOpacity === 0) {
-            el.style.opacity = '0';
-            continue;
-          }
+      let activeIdx = lyrics.findIndex(l => time >= l.start && time <= l.end);
+      if (activeIdx === -1) {
+        // Between lines — find the next one
+        const nextIdx = lyrics.findIndex(l => l.start > time);
+        activeIdx = nextIdx === -1 ? lyrics.length - 1 : Math.max(0, nextIdx - 1);
+      }
 
-          const isWordActive = t >= w.start && t <= w.end;
-          
-          let fill = '#b8b8b8';
-          let fw = '300';
-          let opac = '0.35';
+      // Render window: WINDOW_BACK before active, rest after
+      const windowStart = Math.max(0, activeIdx - WINDOW_BACK);
+      const windowEnd   = Math.min(lyrics.length - 1, windowStart + WINDOW_SIZE - 1);
 
-          if (isLineActive) {
-            fill = '#333333';
-            fw = '450';
-            opac = '0.9';
-          }
-          if (isWordActive) {
-            fill = '#000000';
-            fw = '700';
-            opac = '1';
-          }
+      // Hide all lines outside the window
+      lyricRefs.current.forEach((el, i) => {
+        if (!el) return;
+        const lineIdx = i;
+        if (lineIdx < windowStart || lineIdx > windowEnd) {
+          el.style.opacity = '0';
+          el.style.pointerEvents = 'none';
+        }
+      });
 
-          el.style.fill = fill;
-          el.style.fontWeight = fw;
-          el.style.opacity = opac;
+      // Position visible lines
+      const visibleCount = windowEnd - windowStart + 1;
+      let visibleSlot = 0;
+
+      for (let lineIdx = windowStart; lineIdx <= windowEnd; lineIdx++) {
+        const el = lyricRefs.current[lineIdx];
+        if (!el) continue;
+
+        const line = lyrics[lineIdx];
+        const plane = ORBITAL_PLANES[visibleSlot % ORBITAL_PLANES.length];
+        visibleSlot++;
+
+        const isActive = lineIdx === activeIdx;
+
+        // Orbit radius: tight around globe (1.12–1.22x)
+        const orbitR = r * (isActive ? 1.22 : 1.14);
+
+        // Calculate orbit angle:
+        // Active line is pinned to front (angle = 0 → positive Z) for its duration.
+        // Other lines orbit slowly.
+        let angle: number;
+        if (isActive) {
+          // Smooth the line into the front over the first 20% of its duration
+          const lineDuration = line.end - line.start;
+          const lineProgress = Math.min(1, (time - line.start) / (lineDuration * 0.2));
+          // ease toward Math.PI/2 (front center of orbit)
+          const targetAngle = Math.PI / 2;
+          const driftAngle = plane.phaseOffset + time * 0.04 * plane.direction;
+          angle = driftAngle + (targetAngle - driftAngle) * lineProgress;
+        } else {
+          // Other lines drift slowly
+          const slotOffset = (lineIdx - activeIdx) * (Math.PI / 3);
+          angle = plane.phaseOffset + slotOffset + time * 0.04 * plane.direction;
+        }
+
+        // 3D position on tilted orbit
+        const x3d = Math.cos(angle) * orbitR;
+        const zFlat = Math.sin(angle) * orbitR;
+        const y3d = zFlat * Math.sin(plane.tilt);
+        const z3d = zFlat * Math.cos(plane.tilt);
+
+        // Determine depth: positive z3d = front (camera-facing)
+        const isInFront = z3d >= 0;
+
+        // Project to screen using Three.js
+        const pos = new THREE.Vector3(x3d, y3d, z3d);
+        pos.project(camera);
+
+        const screenX = (pos.x * 0.5 + 0.5) * W;
+        const screenY = -(pos.y * 0.5 - 0.5) * H;
+
+        // Skip if way off-screen
+        if (screenX < -200 || screenX > W + 200 || screenY < -100 || screenY > H + 100) {
+          el.style.opacity = '0';
+          continue;
+        }
+
+        // ── Visual hierarchy ──────────────────────────────────────
+        let opacity: number;
+        let color: string;
+        let fontWeight: string;
+        let textShadow: string;
+        let zIndex: number;
+
+        if (isActive) {
+          opacity = isInFront ? 0.95 : 0.35;
+          color = '#111111';
+          fontWeight = '500';
+          textShadow = isInFront ? '0 1px 4px rgba(255,255,255,0.9)' : 'none';
+          zIndex = isInFront ? 30 : 8;
+        } else {
+          // Fade by distance from active (before = slightly lighter)
+          const dist = Math.abs(lineIdx - activeIdx);
+          opacity = isInFront
+            ? (dist === 1 ? 0.32 : 0.18)
+            : (dist === 1 ? 0.12 : 0.07);
+          color = '#888888';
+          fontWeight = '350';
+          textShadow = 'none';
+          zIndex = isInFront ? 25 : 5;
+        }
+
+        // Fade out lines that are too far left (protect the UI column)
+        const leftGuard = Math.max(0, Math.min(1, (screenX - 60) / 120));
+        opacity *= leftGuard;
+
+        // Apply to DOM directly
+        el.style.opacity = opacity.toString();
+        el.style.color = color;
+        el.style.fontWeight = fontWeight;
+        el.style.textShadow = textShadow;
+        el.style.zIndex = zIndex.toString();
+        el.style.transform = `translate(${screenX}px, ${screenY}px) translate(-50%, -50%)`;
+        el.style.pointerEvents = 'none';
+
+        // ── Word highlighting ─────────────────────────────────────
+        if (isActive && isInFront && line.words?.length) {
+          const wordSpans = el.querySelectorAll<HTMLSpanElement>('[data-word]');
+          wordSpans.forEach((span, wi) => {
+            const word = line.words[wi];
+            if (!word) return;
+            const isCurrentWord = time >= word.start && time <= word.end;
+            span.style.color = isCurrentWord ? '#000000' : '#333333';
+            span.style.fontWeight = isCurrentWord ? '650' : '500';
+          });
         }
       }
     };
-    
-    window.addEventListener('music-time', handleTime);
-    return () => window.removeEventListener('music-time', handleTime);
-  }, []);
 
+    window.addEventListener('music-time', handleTime as EventListener);
+    return () => window.removeEventListener('music-time', handleTime as EventListener);
+  }, [currentTrack]);
+
+  // ─── Globe interaction ────────────────────────────────────────────────────
   const handleMouseEnter = (album: Album) => {
-    setActiveAlbumId(album.id);
     if (globeEl.current && album.lat && album.lng) {
       globeEl.current.pointOfView({ lat: album.lat, lng: album.lng, altitude: 1.5 }, 1000);
       setRings([{ lat: album.lat, lng: album.lng, maxR: 6, propagationSpeed: 1.2, repeatPeriod: 1500 }]);
@@ -186,7 +259,6 @@ export default function GlobeComponent({ albums }: { albums: Album[] }) {
   };
 
   const handleMouseLeave = () => {
-    setActiveAlbumId(null);
     if (globeEl.current) {
       globeEl.current.pointOfView({ lat: 20, lng: 70, altitude: 2.4 }, 1000);
       setRings([]);
@@ -196,10 +268,13 @@ export default function GlobeComponent({ albums }: { albums: Album[] }) {
   const colorInterpolator = (t: number) => `rgba(204,0,0,${Math.sqrt(1 - t)})`;
 
   return (
-    <section className="fixed inset-0 bg-white text-black overflow-hidden selection:bg-black selection:text-white flex flex-col md:flex-row">
-      
-      {/* BACKGROUND PROJECTION GRID */}
-      <svg className="absolute inset-0 w-full h-full pointer-events-none z-0" style={{ stroke: 'rgba(0,0,0,0.04)', strokeWidth: 1, fill: 'none' }}>
+    <section className="fixed inset-0 bg-white text-black overflow-hidden flex">
+
+      {/* ── BACKGROUND GRATICULE ────────────────────────────────────────── */}
+      <svg
+        className="absolute inset-0 w-full h-full pointer-events-none z-0"
+        style={{ stroke: 'rgba(0,0,0,0.04)', strokeWidth: 1, fill: 'none' }}
+      >
         <ellipse cx="50%" cy="50%" rx="48%" ry="100%" />
         <ellipse cx="50%" cy="50%" rx="36%" ry="100%" />
         <ellipse cx="50%" cy="50%" rx="24%" ry="100%" />
@@ -211,39 +286,39 @@ export default function GlobeComponent({ albums }: { albums: Album[] }) {
         <line x1="0" y1="80%" x2="100%" y2="80%" />
       </svg>
 
-      {/* LEFT STABLE UI COLUMN */}
-      <div className="absolute inset-0 md:relative md:w-[45vw] lg:w-[40vw] max-w-[600px] h-full z-50 flex flex-col justify-center px-8 md:pl-[8vw] md:pr-8 pointer-events-none">
-        <h1 className="font-bold mb-12 sm:mb-20 text-4xl md:text-5xl lg:text-6xl font-serif tracking-tight text-[#111] drop-shadow-sm pointer-events-auto whitespace-nowrap">
+      {/* ── LEFT UI COLUMN ──────────────────────────────────────────────── */}
+      <div className="relative z-50 w-[44vw] md:w-[38vw] lg:w-[36vw] max-w-[540px] flex-shrink-0 flex flex-col justify-center pl-[8vw] pr-6 pointer-events-none">
+        <h1 className="font-bold mb-10 sm:mb-16 text-4xl md:text-5xl lg:text-6xl font-serif tracking-tight text-[#111] pointer-events-auto whitespace-nowrap">
           {siteConfig.siteName}
         </h1>
-        <ul className="flex flex-col items-start tracking-tight text-xl md:text-3xl lg:text-4xl font-sans pointer-events-auto gap-2">
+        <ul className="flex flex-col gap-2 text-xl md:text-2xl lg:text-3xl font-sans pointer-events-auto">
           {locations.map(album => (
             <li
               key={album.id}
-              className="max-w-fit group flex items-center gap-4"
+              className="group"
               onMouseEnter={() => handleMouseEnter(album)}
               onMouseLeave={handleMouseLeave}
             >
               <Link
                 href={`/places/${album.slug}`}
-                className="text-[#555] hover:text-[#000] transition-colors relative"
+                className="text-[#555] hover:text-[#000] transition-colors relative inline-block"
               >
                 {album.title}
-                <span className="absolute left-0 -bottom-1 w-0 h-[1px] bg-red-600 transition-all group-hover:w-full"></span>
+                <span className="absolute left-0 -bottom-px w-0 h-px bg-red-600 transition-all group-hover:w-full" />
               </Link>
             </li>
           ))}
         </ul>
       </div>
 
-      {/* CENTER/RIGHT GLOBE SCENE */}
-      <div className="absolute inset-0 md:left-[30vw] h-full z-10 pointer-events-none">
-        <div ref={globeContainerRef} className="absolute inset-0 flex items-center justify-center">
-          
-          {/* GLOBE CANVAS */}
-          <div className="absolute inset-0 pointer-events-auto" style={{ zIndex: 10 }}>
+      {/* ── GLOBE + LYRIC ORBIT SCENE ──────────────────────────────────── */}
+      <div className="absolute inset-0 z-10 pointer-events-none" style={{ left: '28vw' }}>
+        <div ref={globeContainerRef} className="absolute inset-0">
+
+          {/* Globe canvas — z-index 20 (sandwiched between lyric layers) */}
+          <div className="absolute inset-0 pointer-events-auto" style={{ zIndex: 20 }}>
             {globeSize.width > 0 && (
-              <Globe
+              <GlobeGL
                 ref={globeEl as any}
                 width={globeSize.width}
                 height={globeSize.height}
@@ -257,12 +332,12 @@ export default function GlobeComponent({ albums }: { albums: Album[] }) {
                 polygonCapMaterial={polygonMaterial}
                 polygonsTransitionDuration={0}
                 polygonAltitude={() => 0}
-                polygonSideColor={() => 'rgba(255, 255, 255, 0)'}
+                polygonSideColor={() => 'rgba(255,255,255,0)'}
                 polygonStrokeColor={() => '#444'}
-                pointsData={locations.map(a => ({ lat: a.lat!, lng: a.lng!, radius: 0.15, album: a }))}
+                pointsData={locations.map(a => ({ lat: a.lat!, lng: a.lng! }))}
                 pointColor={() => '#cc0000'}
                 pointAltitude={0.01}
-                pointRadius={point => (point as { radius: number }).radius}
+                pointRadius={0.18}
                 pointsMerge={true}
                 ringsData={rings}
                 ringColor={() => colorInterpolator}
@@ -278,62 +353,43 @@ export default function GlobeComponent({ albums }: { albums: Album[] }) {
             )}
           </div>
 
-          {/* PERFECT 2D LYRIC ORBIT (SVG TEXT PATH) */}
-          <svg 
-            ref={svgRef}
-            className="absolute pointer-events-none will-change-transform" 
-            style={{ 
-              zIndex: 20, 
-              width: '95%', 
-              height: '95%', 
-              maxWidth: '900px', 
-              maxHeight: '900px', 
-              transform: 'rotate(45deg)',
-              transition: 'transform 0.1s linear' 
-            }} 
-            viewBox="0 0 1000 1000"
-          >
-            <defs>
-              <path id="lyric-orbit-path" d="
-                M 500,40
-                A 460,460 0 1,1 499.9,40
-                A 460,460 0 1,1 499.8,40
-                A 460,460 0 1,1 499.7,40
-              " />
-            </defs>
-            <text className="font-serif tracking-wide" style={{ fontSize: '26px' }}>
-              <textPath href="#lyric-orbit-path" textLength="8670" lengthAdjust="spacing">
-                {LYRIC_LINES.map((line, i) => (
-                  <React.Fragment key={i}>
-                    {line.words.map((w, j) => {
-                      // We assign refs based on flat index
-                      const flatIndex = LYRIC_LINES.slice(0, i).reduce((sum, l) => sum + l.words.length, 0) + j;
-                      return (
-                        <React.Fragment key={j}>
-                          <tspan 
-                            ref={el => { wordRefs.current[flatIndex] = el; }}
-                            fill="#b8b8b8"
-                            style={{ opacity: 0, transition: 'fill 0.15s, font-weight 0.15s, opacity 0.3s ease-in-out' }}
-                          >
-                            {w.text}
-                          </tspan>
-                          <tspan fill="transparent"> </tspan>
-                        </React.Fragment>
-                      );
-                    })}
-                    <tspan fill="#d0d0d0" opacity="0.3"> • </tspan>
-                  </React.Fragment>
-                ))}
-              </textPath>
-            </text>
-          </svg>
-          
+          {/* DOM Billboard Lyrics — positioned by the orbit engine above */}
+          {currentTrack.lyrics.map((line, i) => (
+            <div
+              key={`${currentTrack.id}-${i}`}
+              ref={el => { lyricRefs.current[i] = el; }}
+              className="absolute left-0 top-0 will-change-transform pointer-events-none select-none"
+              style={{
+                opacity: 0,
+                fontSize: 'clamp(14px, 1.5vw, 24px)',
+                fontFamily: 'ui-serif, Georgia, "Times New Roman", serif',
+                letterSpacing: '0.04em',
+                whiteSpace: 'nowrap',
+                transition: 'opacity 0.25s ease, color 0.2s ease',
+              }}
+            >
+              {line.words.map((word, wi) => (
+                <React.Fragment key={wi}>
+                  <span
+                    data-word
+                    style={{ transition: 'color 0.1s, font-weight 0.1s' }}
+                  >
+                    {word.text}
+                  </span>
+                  {wi < line.words.length - 1 && ' '}
+                </React.Fragment>
+              ))}
+            </div>
+          ))}
+
         </div>
       </div>
 
-      <footer className="absolute bottom-8 right-8 md:bottom-12 md:right-[6vw] z-50 pointer-events-none text-[#555] font-sans text-sm md:text-base tracking-widest uppercase">
-        <p className="m-0 p-0">&copy; {new Date().getFullYear()}</p>
+      {/* ── FOOTER ────────────────────────────────────────────────────── */}
+      <footer className="absolute bottom-8 right-8 md:bottom-12 md:right-[5vw] z-50 pointer-events-none text-[#999] font-sans text-xs tracking-widest">
+        &copy; {new Date().getFullYear()}
       </footer>
+
     </section>
   );
 }

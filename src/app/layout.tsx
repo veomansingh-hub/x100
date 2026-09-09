@@ -1,7 +1,8 @@
 import type { Metadata } from 'next';
 import './globals.css';
 import { siteConfig } from '@/data/config';
-import { BackgroundMusic } from '@/components/BackgroundMusic';
+import { MusicProvider } from '@/contexts/MusicContext';
+import { MusicPlayer } from '@/components/MusicPlayer';
 
 export const metadata: Metadata = {
   title: siteConfig.siteName,
@@ -16,8 +17,10 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="antialiased">
-        <BackgroundMusic />
-        {children}
+        <MusicProvider>
+          {children}
+          <MusicPlayer />
+        </MusicProvider>
       </body>
     </html>
   );
