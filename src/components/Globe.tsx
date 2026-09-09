@@ -8,11 +8,43 @@ import { Album } from '@/data/albums';
 import { siteConfig } from '@/data/config';
 import Link from 'next/link';
 import { LYRIC_LINES } from './BackgroundMusic';
+import dynamic from 'next/dynamic';
 
-export default function Globe({ albums }: { albums: Album[] }) {
-  const globeEl = useRef<GlobeMethods | undefined>(undefined);
+const Globe = dynamic(() => import('react-globe.gl'), { ssr: false });
+
+// Calculate continuous time->angle mapping for smooth SVG rotation
+const totalChars = LYRIC_LINES.reduce((sum, l) => sum + l.text.length + 3, 0);
+let running = 0;
+const lineAngles = LYRIC_LINES.map(l => {
+  const startAngle = (running / totalChars) * 1080; // 3 loops = 1080 degrees
+  running += l.text.length + 3;
+  const endAngle = (running / totalChars) * 1080;
+  return { startAngle, endAngle };
+});
+
+const timeMap: {time: number, angle: number}[] = [];
+LYRIC_LINES.forEach((l, i) => {
+  timeMap.push({ time: l.start, angle: lineAngles[i].startAngle });
+  timeMap.push({ time: l.end, angle: lineAngles[i].endAngle });
+});
+
+function getAngleForTime(t: number) {
+  if (t <= timeMap[0].time) return timeMap[0].angle;
+  if (t >= timeMap[timeMap.length-1].time) return timeMap[timeMap.length-1].angle;
+  for (let i = 0; i < timeMap.length - 1; i++) {
+    if (t >= timeMap[i].time && t <= timeMap[i+1].time) {
+      const p = (t - timeMap[i].time) / (timeMap[i+1].time - timeMap[i].time);
+      return timeMap[i].angle + p * (timeMap[i+1].angle - timeMap[i].angle);
+    }
+  }
+  return 0;
+}
+
+export default function GlobeComponent({ albums }: { albums: Album[] }) {
+  const globeEl = useRef<any>(undefined);
   const globeContainerRef = useRef<HTMLDivElement>(null);
-  const lineRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const svgRef = useRef<SVGSVGElement>(null);
+  const wordRefs = useRef<(SVGTSpanElement | null)[]>([]);
 
   const [landPolygons, setLandPolygons] = useState<any[]>([]);
   const [globeSize, setGlobeSize] = useState({ width: 800, height: 800 });
@@ -22,7 +54,6 @@ export default function Globe({ albums }: { albums: Album[] }) {
 
   const locations = albums.filter(a => a.type === 'location' && a.lat && a.lng);
 
-  // Measure container for accurate Three.js projection
   useEffect(() => {
     if (!globeContainerRef.current) return;
     const obs = new ResizeObserver((entries) => {
@@ -71,118 +102,75 @@ export default function Globe({ albums }: { albums: Album[] }) {
     g.controls().dampingFactor = 0.05;
     g.controls().enableZoom = false;
     
-    g.pointOfView({ lat: 20, lng: 70, altitude: 2.2 });
-
-    const scene = g.scene();
-    const radius = g.getGlobeRadius();
-
-    // Foggy inner sphere for true depth occlusion
-    const innerGeo = new THREE.SphereGeometry(radius - 0.5, 64, 32);
-    const innerMat = new THREE.MeshBasicMaterial({
-      color: 0xffffff,
-      opacity: 0.9,
-      transparent: true,
-      depthWrite: false
-    });
-    const innerSphere = new THREE.Mesh(innerGeo, innerMat);
-    scene.add(innerSphere);
-
-    return () => {
-      scene.remove(innerSphere);
-      innerGeo.dispose();
-      innerMat.dispose();
-    };
+    g.pointOfView({ lat: 20, lng: 70, altitude: 2.4 });
   }, [globeEl.current]);
 
-  // Synchronized DOM Projection Engine
+  // Synchronized Lyric Engine
   useEffect(() => {
     let animationFrameId: number;
+    let baselineRotation = 0; // Slowly drifts when music is paused
+
     const handleTime = (e: any) => {
       const t = e.detail;
-      const g = globeEl.current;
-      const container = globeContainerRef.current;
-      if (!g || !container) return;
+      if (!svgRef.current) return;
 
-      const camera = g.camera();
-      const r = g.getGlobeRadius();
-      const { width, height } = container.getBoundingClientRect();
+      // Calculate perfect SVG rotation to pin active lyric to top right (45deg)
+      const currentPhysicalAngle = getAngleForTime(t);
+      const targetRotation = 45 - currentPhysicalAngle;
+      
+      svgRef.current.style.transform = `rotate(${targetRotation}deg)`;
 
-      let activeIdx = LYRIC_LINES.findIndex(l => t >= l.time && t <= l.time + l.duration);
-      if (activeIdx === -1) {
-        activeIdx = LYRIC_LINES.findIndex(l => l.time > t);
-        if (activeIdx === -1) activeIdx = LYRIC_LINES.length - 1;
+      // Determine active line window (show about 5 lines)
+      let activeLineIdx = LYRIC_LINES.findIndex(l => t >= l.start && t <= l.end);
+      if (activeLineIdx === -1) {
+        activeLineIdx = LYRIC_LINES.findIndex(l => l.start > t);
+        if (activeLineIdx === -1) activeLineIdx = LYRIC_LINES.length - 1;
       }
 
-      lineRefs.current.forEach((el, i) => {
-        if (!el) return;
+      // Update word stylings dynamically without React re-renders!
+      let flatWordIdx = 0;
+      for (let i = 0; i < LYRIC_LINES.length; i++) {
         const line = LYRIC_LINES[i];
-        const distance = Math.abs(i - activeIdx);
+        const isLineActive = t >= line.start && t <= line.end;
         
-        // Render only a tight window of 3-5 lines
-        if (distance > 2) {
-          el.style.opacity = '0';
-          el.style.pointerEvents = 'none';
-          return;
-        }
+        // Window clipping: prevent overlapping text loops from showing
+        const distance = Math.abs(i - activeLineIdx);
+        const lineOpacity = distance <= 3 ? 1 : 0;
 
-        const midTime = line.time + line.duration / 2;
-        const orbitIndex = i % 3;
-        // Gentle orbital planes
-        const tilt = [25, 35, 45][orbitIndex] * (Math.PI / 180);
-        const direction = orbitIndex % 2 === 0 ? 1 : -1;
-        
-        // At exactly midTime, angle = Math.PI/2 (front center)
-        const angle = Math.PI/2 + (t - midTime) * 0.15 * direction;
-        
-        const bulge = Math.max(0, 1 - Math.abs(t - midTime)/6);
-        const radius = r * (1.15 + bulge * 0.12); 
-        
-        const x = Math.cos(angle) * radius;
-        const z = Math.sin(angle) * radius;
-        
-        const y3d = -z * Math.sin(tilt) + (orbitIndex - 1) * (r * 0.25);
-        const z3d = z * Math.cos(tilt);
-        
-        const pos = new THREE.Vector3(x, y3d, z3d);
-        pos.project(camera);
-        
-        const screenX = (pos.x * 0.5 + 0.5) * width;
-        const screenY = -(pos.y * 0.5 - 0.5) * height;
-        
-        const isBack = z3d < 0;
-        let opacity = isBack ? 0.15 : 0.35;
-        let color = '#b8b8b8';
-        let fontWeight = 350;
-        let zIndex = isBack ? 5 : 30; // 5 goes behind WebGL canvas
-        
-        let lineProgress = 0;
-        if (t >= line.time && t <= line.time + line.duration) {
-          lineProgress = 1;
-        } else if (t >= line.time - 0.5 && t < line.time) {
-          lineProgress = (t - (line.time - 0.5)) / 0.5;
-        } else if (t > line.time + line.duration && t <= line.time + line.duration + 0.5) {
-          lineProgress = 1 - (t - (line.time + line.duration)) / 0.5;
-        }
-        
-        if (lineProgress > 0) {
-          color = '#111111';
-          fontWeight = 550;
-          opacity = opacity + (1 - opacity) * lineProgress;
-        }
-        
-        // Left UI clipping protection
-        let fadeLeft = 1;
-        if (screenX < width * 0.15) {
-           fadeLeft = Math.max(0, (screenX) / (width * 0.15));
-        }
-        opacity *= fadeLeft;
+        for (let j = 0; j < line.words.length; j++) {
+          const w = line.words[j];
+          const el = wordRefs.current[flatWordIdx];
+          flatWordIdx++;
+          
+          if (!el) continue;
 
-        el.style.opacity = opacity.toString();
-        el.style.color = color;
-        el.style.fontWeight = fontWeight.toString();
-        el.style.transform = `translate(-50%, -50%) translate(${screenX}px, ${screenY}px)`;
-        el.style.zIndex = zIndex.toString();
-      });
+          if (lineOpacity === 0) {
+            el.style.opacity = '0';
+            continue;
+          }
+
+          const isWordActive = t >= w.start && t <= w.end;
+          
+          let fill = '#b8b8b8';
+          let fw = '300';
+          let opac = '0.35';
+
+          if (isLineActive) {
+            fill = '#333333';
+            fw = '450';
+            opac = '0.9';
+          }
+          if (isWordActive) {
+            fill = '#000000';
+            fw = '700';
+            opac = '1';
+          }
+
+          el.style.fill = fill;
+          el.style.fontWeight = fw;
+          el.style.opacity = opac;
+        }
+      }
     };
     
     window.addEventListener('music-time', handleTime);
@@ -200,7 +188,7 @@ export default function Globe({ albums }: { albums: Album[] }) {
   const handleMouseLeave = () => {
     setActiveAlbumId(null);
     if (globeEl.current) {
-      globeEl.current.pointOfView({ lat: 20, lng: 70, altitude: 2.2 }, 1000);
+      globeEl.current.pointOfView({ lat: 20, lng: 70, altitude: 2.4 }, 1000);
       setRings([]);
     }
   };
@@ -221,9 +209,6 @@ export default function Globe({ albums }: { albums: Album[] }) {
         <line x1="0" y1="65%" x2="100%" y2="65%" />
         <line x1="0" y1="20%" x2="100%" y2="20%" />
         <line x1="0" y1="80%" x2="100%" y2="80%" />
-        <circle cx="20%" cy="30%" r="1" fill="rgba(0,0,0,0.1)" stroke="none" />
-        <circle cx="80%" cy="70%" r="1" fill="rgba(0,0,0,0.1)" stroke="none" />
-        <circle cx="70%" cy="20%" r="1" fill="rgba(0,0,0,0.1)" stroke="none" />
       </svg>
 
       {/* LEFT STABLE UI COLUMN */}
@@ -253,12 +238,12 @@ export default function Globe({ albums }: { albums: Album[] }) {
 
       {/* CENTER/RIGHT GLOBE SCENE */}
       <div className="absolute inset-0 md:left-[30vw] h-full z-10 pointer-events-none">
-        <div ref={globeContainerRef} className="absolute inset-0 pointer-events-auto">
+        <div ref={globeContainerRef} className="absolute inset-0 flex items-center justify-center">
           
           {/* GLOBE CANVAS */}
-          <div className="absolute inset-0" style={{ zIndex: 20 }}>
+          <div className="absolute inset-0 pointer-events-auto" style={{ zIndex: 10 }}>
             {globeSize.width > 0 && (
-              <GlobeGL
+              <Globe
                 ref={globeEl as any}
                 width={globeSize.width}
                 height={globeSize.height}
@@ -293,23 +278,55 @@ export default function Globe({ albums }: { albums: Album[] }) {
             )}
           </div>
 
-          {/* PROJECTED BILLBOARD LYRICS */}
-          {LYRIC_LINES.map((line, i) => (
-            <div 
-              key={i}
-              ref={el => { lineRefs.current[i] = el; }}
-              className="absolute left-0 top-0 font-serif tracking-wide whitespace-nowrap will-change-transform pointer-events-none"
-              style={{ 
-                fontSize: 'clamp(16px, 1.8vw, 26px)',
-                textShadow: '0 0 3px rgba(255,255,255,0.9), 0 0 10px rgba(255,255,255,0.5)',
-                transition: 'opacity 0.2s, color 0.2s, font-weight 0.2s',
-                opacity: 0,
-                zIndex: 5
-              }}
-            >
-              {line.text}
-            </div>
-          ))}
+          {/* PERFECT 2D LYRIC ORBIT (SVG TEXT PATH) */}
+          <svg 
+            ref={svgRef}
+            className="absolute pointer-events-none will-change-transform" 
+            style={{ 
+              zIndex: 20, 
+              width: '95%', 
+              height: '95%', 
+              maxWidth: '900px', 
+              maxHeight: '900px', 
+              transform: 'rotate(45deg)',
+              transition: 'transform 0.1s linear' 
+            }} 
+            viewBox="0 0 1000 1000"
+          >
+            <defs>
+              <path id="lyric-orbit-path" d="
+                M 500,40
+                A 460,460 0 1,1 499.9,40
+                A 460,460 0 1,1 499.8,40
+                A 460,460 0 1,1 499.7,40
+              " />
+            </defs>
+            <text className="font-serif tracking-wide" style={{ fontSize: '26px' }}>
+              <textPath href="#lyric-orbit-path" textLength="8670" lengthAdjust="spacing">
+                {LYRIC_LINES.map((line, i) => (
+                  <React.Fragment key={i}>
+                    {line.words.map((w, j) => {
+                      // We assign refs based on flat index
+                      const flatIndex = LYRIC_LINES.slice(0, i).reduce((sum, l) => sum + l.words.length, 0) + j;
+                      return (
+                        <React.Fragment key={j}>
+                          <tspan 
+                            ref={el => { wordRefs.current[flatIndex] = el; }}
+                            fill="#b8b8b8"
+                            style={{ opacity: 0, transition: 'fill 0.15s, font-weight 0.15s, opacity 0.3s ease-in-out' }}
+                          >
+                            {w.text}
+                          </tspan>
+                          <tspan fill="transparent"> </tspan>
+                        </React.Fragment>
+                      );
+                    })}
+                    <tspan fill="#d0d0d0" opacity="0.3"> • </tspan>
+                  </React.Fragment>
+                ))}
+              </textPath>
+            </text>
+          </svg>
           
         </div>
       </div>
