@@ -96,22 +96,22 @@ export function BackgroundMusic() {
     }
   };
 
-  // Find active line
-  const activeLine = useMemo(() => {
-    return LINES.find(l => currentTime >= l.time && currentTime <= l.time + l.duration);
-  }, [currentTime]);
-
-  // Split active line into words with exact timestamps
-  const activeWords = useMemo(() => {
-    if (!activeLine) return [];
-    const words = activeLine.text.split(' ');
-    const durationPerWord = activeLine.duration / words.length;
-    return words.map((word, i) => ({
-      text: word,
-      start: activeLine.time + (i * durationPerWord),
-      end: activeLine.time + ((i + 1) * durationPerWord)
-    }));
-  }, [activeLine]);
+  // Process all words once
+  const allWords = useMemo(() => {
+    const words: { text: string; start: number; end: number }[] = [];
+    LINES.forEach(line => {
+      const lineWords = line.text.split(' ');
+      const dur = line.duration / lineWords.length;
+      lineWords.forEach((w, i) => {
+        words.push({
+          text: w,
+          start: line.time + (i * dur),
+          end: line.time + ((i + 1) * dur)
+        });
+      });
+    });
+    return words;
+  }, []);
 
   return (
     <>
@@ -131,56 +131,40 @@ export function BackgroundMusic() {
         {isPlaying ? 'Pause Music' : 'Play Music'}
       </button>
 
-      {/* Orbiting Marquee Lyrics */}
+      {/* Full Circle Orbiting Lyrics */}
       <div 
         className="fixed inset-0 pointer-events-none flex items-center justify-center z-0 overflow-hidden mix-blend-difference"
         style={{ perspective: '1200px' }}
       >
-        <AnimatePresence mode="wait">
-          {activeLine && (
-            <motion.div
-              key={activeLine.time}
-              initial={{ opacity: 0, rotateX: 70, rotateZ: -50 }}
-              animate={{ 
-                opacity: [0, 1, 1, 0], 
-                rotateX: 70, 
-                rotateZ: 50 
-              }}
-              exit={{ opacity: 0 }}
-              transition={{ 
-                duration: activeLine.duration, 
-                ease: 'linear',
-                opacity: { times: [0, 0.2, 0.8, 1] }
-              }}
-              className="absolute w-[800px] h-[800px] lg:w-[1200px] lg:h-[1200px]"
-              style={{ transformStyle: 'preserve-3d' }}
-            >
-              <svg viewBox="0 0 1000 1000" className="w-full h-full">
-                <defs>
-                  {/* Counter-clockwise path starting from left, so bottom arc goes left-to-right */}
-                  <path id="orbitPath" d="M 100, 500 a 400,400 0 0,0 800,0 a 400,400 0 0,0 -800,0" />
-                </defs>
-                <text style={{ fontSize: '72px', letterSpacing: '0.15em' }} className="font-serif">
-                  <textPath href="#orbitPath" startOffset="25%" textAnchor="middle">
-                    {activeWords.map((wordObj, idx) => {
-                      const isHighlight = currentTime >= wordObj.start && currentTime < wordObj.end;
-                      return (
-                        <tspan 
-                          key={idx}
-                          className={`transition-colors duration-200 ${
-                            isHighlight ? 'fill-white font-bold' : 'fill-neutral-600'
-                          }`}
-                        >
-                          {wordObj.text}{" "}
-                        </tspan>
-                      );
-                    })}
-                  </textPath>
-                </text>
-              </svg>
-            </motion.div>
-          )}
-        </AnimatePresence>
+        <motion.div
+          animate={{ rotateZ: [0, 360] }}
+          transition={{ duration: 180, ease: 'linear', repeat: Infinity }}
+          className="absolute w-[900px] h-[900px] lg:w-[1400px] lg:h-[1400px]"
+          style={{ transformStyle: 'preserve-3d', rotateX: 75 }}
+        >
+          <svg viewBox="0 0 1000 1000" className="w-full h-full">
+            <defs>
+              <path id="fullOrbit" d="M 500, 100 a 400,400 0 1,1 0,800 a 400,400 0 1,1 0,-800" />
+            </defs>
+            <text style={{ fontSize: '18px', letterSpacing: '0.1em' }} className="font-serif uppercase">
+              <textPath href="#fullOrbit" textLength="2500" lengthAdjust="spacing">
+                {allWords.map((wordObj, idx) => {
+                  const isHighlight = currentTime >= wordObj.start && currentTime < wordObj.end;
+                  return (
+                    <tspan 
+                      key={idx}
+                      className={`transition-colors duration-200 ${
+                        isHighlight ? 'fill-white font-bold' : 'fill-neutral-700'
+                      }`}
+                    >
+                      {wordObj.text}{" "}
+                    </tspan>
+                  );
+                })}
+              </textPath>
+            </text>
+          </svg>
+        </motion.div>
       </div>
     </>
   );
