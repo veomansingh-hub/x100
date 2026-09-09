@@ -7,9 +7,10 @@ const nextConfig = {
         hostname: 'images.unsplash.com',
       },
       {
-        // Vercel Blob CDN — all photos are hosted here
+        // Vercel Blob CDN — exact store hostname (wildcard unreliable in Next.js 15)
         protocol: 'https',
-        hostname: '*.public.blob.vercel-storage.com',
+        hostname: 'geunjt5vlztyjyjb.public.blob.vercel-storage.com',
+        pathname: '/**',
       },
     ],
   },

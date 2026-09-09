@@ -11,43 +11,41 @@ import dynamic from 'next/dynamic';
 
 const GlobeGL = dynamic(() => import('react-globe.gl'), { ssr: false });
 
-// ─── SVG lyric ring helpers ───────────────────────────────────────────────────
-
-/** Creates a clockwise full-circle SVG path starting at the TOP (12 o'clock). */
+// ─── SVG ring helpers ─────────────────────────────────────────────────────────
 function ringPath(cx: number, cy: number, r: number) {
   const top = cy - r;
-  // Two arcs to form the full circle (SVG can't express a full arc in one command)
-  return [
-    `M ${cx},${top}`,
-    `A ${r},${r} 0 1,1 ${cx - 0.001},${top}`,
-    `Z`,
-  ].join(' ');
+  return `M ${cx},${top} A ${r},${r} 0 1,1 ${cx - 0.001},${top} Z`;
 }
 
-/** Separator between lyric lines in the ring */
-const SEP = '    ·    ';
-/** Approximate rendered width of one character (serif 22px) */
-const CHAR_W = 11.8;
+const SEP    = '    ·    ';
+const CHAR_W = 11.5;
 
-// ─── Component ───────────────────────────────────────────────────────────────
+// ─── Component ────────────────────────────────────────────────────────────────
 export default function GlobeComponent({ albums }: { albums: Album[] }) {
-  const { currentTrack } = useMusicContext();
+  const { tracks, currentTrack, isPlaying, switchTrack, togglePlay } = useMusicContext();
 
-  const globeEl       = useRef<any>(undefined);
-  const containerRef  = useRef<HTMLDivElement>(null);
-  const textPathRef   = useRef<SVGTextPathElement>(null);
-  const svgRef        = useRef<SVGSVGElement>(null);
+  const globeEl      = useRef<any>(undefined);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const textPathRef  = useRef<SVGTextPathElement>(null);
 
   const [landPolygons, setLandPolygons] = useState<any[]>([]);
-  const [globeSize, setGlobeSize]       = useState({ width: 800, height: 800 });
+  const [globeSize, setGlobeSize]       = useState({ width: 0, height: 0 });
   const [rings, setRings]               = useState<any[]>([]);
   const [arcs, setArcs]                 = useState<any[]>([]);
-  // Dynamic ring geometry: cx, cy in SVG px coords, r = ring radius
-  const [ringGeom, setRingGeom] = useState({ cx: 0, cy: 0, r: 0 });
+  const [ringGeom, setRingGeom]         = useState({ cx: 0, cy: 0, r: 0 });
+  const [isMobile, setIsMobile]         = useState(false);
 
   const locations = albums.filter(a => a.type === 'location' && a.lat && a.lng);
 
-  // ─── Resize ──────────────────────────────────────────────────────────────
+  // ─── Detect mobile ──────────────────────────────────────────────────────
+  useEffect(() => {
+    const check = () => setIsMobile(window.innerWidth < 768);
+    check();
+    window.addEventListener('resize', check);
+    return () => window.removeEventListener('resize', check);
+  }, []);
+
+  // ─── Resize observer on globe container ─────────────────────────────────
   useEffect(() => {
     if (!containerRef.current) return;
     const obs = new ResizeObserver(entries => {
@@ -58,7 +56,7 @@ export default function GlobeComponent({ albums }: { albums: Album[] }) {
     return () => obs.disconnect();
   }, []);
 
-  // ─── Load geo ────────────────────────────────────────────────────────────
+  // ─── Load geo data ───────────────────────────────────────────────────────
   useEffect(() => {
     import('@/data/land-110m.json').then((topo: any) => {
       const d = topo.default || topo;
@@ -90,93 +88,63 @@ export default function GlobeComponent({ albums }: { albums: Album[] }) {
     g.pointOfView({ lat: 20, lng: 70, altitude: 2.4 });
   }, [globeEl.current]);
 
-  // ─── Compute ring geometry from Three.js camera projection ───────────────
-  // Runs every 500ms to track globe as it auto-rotates/changes view
+  // ─── Compute ring geometry from Three.js camera ───────────────────────────
   useEffect(() => {
     const compute = () => {
       if (!globeEl.current || !containerRef.current) return;
-      const g    = globeEl.current;
       const rect = containerRef.current.getBoundingClientRect();
-      const W    = rect.width;
-      const H    = rect.height;
-      const cam  = g.camera();
-
-      // Globe center (0,0,0) → screen
+      const W = rect.width;
+      const H = rect.height;
+      const cam = globeEl.current.camera();
       const c3 = new THREE.Vector3(0, 0, 0).project(cam);
       const cx = (c3.x * 0.5 + 0.5) * W;
       const cy = -(c3.y * 0.5 - 0.5) * H;
-
-      // Globe edge (radius=100 in react-globe.gl) → screen
       const e3 = new THREE.Vector3(100, 0, 0).project(cam);
       const ex = (e3.x * 0.5 + 0.5) * W;
-
-      const screenR = Math.abs(ex - cx);
-      // Lyric ring sits just outside the globe: +15% padding
-      setRingGeom({ cx, cy, r: screenR * 1.15 });
+      setRingGeom({ cx, cy, r: Math.abs(ex - cx) * 1.16 });
     };
-
-    const id = setInterval(compute, 400);
-    // Also run once when globe is ready
-    const init = setTimeout(compute, 800);
-    return () => { clearInterval(id); clearTimeout(init); };
+    const id  = setInterval(compute, 400);
+    const tid = setTimeout(compute, 800);
+    return () => { clearInterval(id); clearTimeout(tid); };
   }, [globeSize]);
 
-  // ─── LYRIC RING ENGINE ───────────────────────────────────────────────────
-  // Runs at ~60fps via music-time events from MusicContext.
-  // Directly mutates the SVG textPath innerHTML and startOffset.
-  // Zero React state updates in the hot path.
-
-  const offsetRef    = useRef(0);   // current animated startOffset (%)
-  const targetOffset = useRef(0);   // where we want to get to
+  // ─── LYRIC RING ENGINE ────────────────────────────────────────────────────
+  const offsetRef    = useRef(0);
+  const targetOffset = useRef(0);
   const rafRef       = useRef<number | null>(null);
 
-  // Animate offset with lerp
   const animateOffset = useCallback(() => {
     const diff = targetOffset.current - offsetRef.current;
     if (Math.abs(diff) > 0.02) {
       offsetRef.current += diff * 0.12;
-      if (textPathRef.current)
-        textPathRef.current.setAttribute('startOffset', `${offsetRef.current.toFixed(2)}%`);
+      textPathRef.current?.setAttribute('startOffset', `${offsetRef.current.toFixed(2)}%`);
       rafRef.current = requestAnimationFrame(animateOffset);
     } else {
       offsetRef.current = targetOffset.current;
-      if (textPathRef.current)
-        textPathRef.current.setAttribute('startOffset', `${offsetRef.current.toFixed(2)}%`);
+      textPathRef.current?.setAttribute('startOffset', `${offsetRef.current.toFixed(2)}%`);
     }
   }, []);
 
   useEffect(() => {
     const lyrics = currentTrack.lyrics;
-
     const handleTime = (e: CustomEvent) => {
       const { time, trackId } = e.detail;
       const tp = textPathRef.current;
       if (!tp || !lyrics?.length) return;
+      if (trackId !== currentTrack.id || time < 0) { tp.innerHTML = ''; return; }
 
-      if (trackId !== currentTrack.id || time < 0) {
-        tp.innerHTML = '';
-        return;
-      }
-
-      // ── Find active line ────────────────────────────────────────────────
       let activeIdx = lyrics.findIndex(l => time >= l.start && time <= l.end);
       if (activeIdx === -1) {
         const next = lyrics.findIndex(l => l.start > time);
         activeIdx = next === -1 ? lyrics.length - 1 : Math.max(0, next - 1);
       }
 
-      // ── Build ring text ─────────────────────────────────────────────────
-      // We put ALL lines in the ring (up to 16 around the circle).
-      // The ring circumference = 2π * r (in px).
-      // Each char ≈ CHAR_W px wide.
-      const r          = ringGeom.r || 320;
-      const circum     = 2 * Math.PI * r;
-      const charsInRing= circum / CHAR_W;
-
-      // Determine a window centred on active that fills roughly the ring
-      const windowHalf = Math.floor((charsInRing * 0.95) / 2 / (28 + SEP.length));
-      const winStart   = Math.max(0, activeIdx - windowHalf);
-      const winEnd     = Math.min(lyrics.length - 1, activeIdx + windowHalf);
+      const r = ringGeom.r || 300;
+      const circum = 2 * Math.PI * r;
+      const charsInRing = circum / CHAR_W;
+      const windowHalf  = Math.max(3, Math.floor((charsInRing * 0.9) / 2 / 28));
+      const winStart = Math.max(0, activeIdx - windowHalf);
+      const winEnd   = Math.min(lyrics.length - 1, activeIdx + windowHalf);
 
       let html = '';
       let totalChars = 0;
@@ -186,43 +154,31 @@ export default function GlobeComponent({ albums }: { albums: Album[] }) {
       for (let i = winStart; i <= winEnd; i++) {
         const line     = lyrics[i];
         const isActive = i === activeIdx;
-
         if (isActive) activeCharStart = totalChars;
 
         if (isActive && line.words?.length) {
-          // Per-word tspan for highlighting
-          let lineHtml = '';
           for (const w of line.words) {
             const isCurrent = time >= w.start && time <= w.end;
-            const fill   = isCurrent ? '#000000' : '#1a1a1a';
+            const fill   = isCurrent ? '#000' : '#1a1a1a';
             const weight = isCurrent ? 700 : 450;
-            lineHtml += `<tspan fill="${fill}" font-weight="${weight}">${escapeXml(w.text)} </tspan>`;
+            html += `<tspan fill="${fill}" font-weight="${weight}">${escXml(w.text)} </tspan>`;
             totalChars += w.text.length + 1;
           }
-          html += lineHtml;
         } else {
-          // Inactive: pale, single tspan
-          const opacity = Math.max(0.08, 0.28 - Math.abs(i - activeIdx) * 0.06);
-          html += `<tspan fill="rgba(0,0,0,${opacity.toFixed(2)})">${escapeXml(line.text)}</tspan>`;
+          const op = Math.max(0.07, 0.26 - Math.abs(i - activeIdx) * 0.06);
+          html += `<tspan fill="rgba(0,0,0,${op.toFixed(2)})">${escXml(line.text)}</tspan>`;
           totalChars += line.text.length;
         }
 
         if (isActive) activeCharEnd = totalChars;
-
-        // Separator
-        html += `<tspan fill="rgba(0,0,0,0.08)">${escapeXml(SEP)}</tspan>`;
+        html += `<tspan fill="rgba(0,0,0,0.07)">${escXml(SEP)}</tspan>`;
         totalChars += SEP.length;
       }
 
-      // ── Update DOM ──────────────────────────────────────────────────────
       tp.innerHTML = html;
 
-      // ── Rotate ring so active line is at TOP (0%) ───────────────────────
-      const activeMidChar  = (activeCharStart + activeCharEnd) / 2;
-      const activePct      = (activeMidChar / totalChars) * 100;
-      // To put activePct at position 0 (top), shift by -activePct
-      const newTarget = -activePct;
-      // Only re-animate if the target changed meaningfully
+      const activeMid = (activeCharStart + activeCharEnd) / 2;
+      const newTarget = -(activeMid / totalChars) * 100;
       if (Math.abs(newTarget - targetOffset.current) > 0.5) {
         targetOffset.current = newTarget;
         if (rafRef.current) cancelAnimationFrame(rafRef.current);
@@ -250,6 +206,211 @@ export default function GlobeComponent({ albums }: { albums: Album[] }) {
   };
   const arcInterp = (t: number) => `rgba(204,0,0,${Math.sqrt(1 - t)})`;
 
+  // ─── Music button click ───────────────────────────────────────────────────
+  const handleMusicClick = (trackId: string) => {
+    if (trackId === currentTrack.id) togglePlay();
+    else switchTrack(trackId);
+  };
+
+  // ─── Globe canvas + lyric ring (shared between mobile and desktop) ────────
+  const globeAndRing = (
+    <div ref={containerRef} className="relative w-full h-full">
+      {/* Globe canvas */}
+      <div className="absolute inset-0 pointer-events-auto" style={{ zIndex: 20 }}>
+        {globeSize.width > 0 && (
+          <GlobeGL
+            ref={globeEl as any}
+            width={globeSize.width}
+            height={globeSize.height}
+            rendererConfig={{ antialias: true, alpha: true }}
+            animateIn={false}
+            backgroundColor="rgba(0,0,0,0)"
+            showGlobe={false}
+            showAtmosphere={false}
+            showGraticules={false}
+            polygonsData={landPolygons}
+            polygonCapMaterial={polyMat}
+            polygonsTransitionDuration={0}
+            polygonAltitude={() => 0}
+            polygonSideColor={() => 'rgba(255,255,255,0)'}
+            polygonStrokeColor={() => '#444'}
+            pointsData={locations.map(a => ({ lat: a.lat!, lng: a.lng! }))}
+            pointColor={() => '#cc0000'}
+            pointAltitude={0.01}
+            pointRadius={0.18}
+            pointsMerge={true}
+            ringsData={rings}
+            ringColor={() => arcInterp}
+            ringMaxRadius="maxR"
+            ringPropagationSpeed="propagationSpeed"
+            ringRepeatPeriod="repeatPeriod"
+            arcsData={arcs}
+            arcColor={() => '#cc0000'}
+            arcDashLength={0.4}
+            arcDashGap={0.2}
+            arcDashAnimateTime={2500}
+          />
+        )}
+      </div>
+
+      {/* Lyric Ring SVG */}
+      {ringGeom.r > 0 && (
+        <svg
+          className="absolute inset-0 pointer-events-none"
+          width={globeSize.width}
+          height={globeSize.height}
+          style={{ zIndex: 25, overflow: 'visible' }}
+        >
+          <defs>
+            <path id="lyric-ring-path" d={ringPath(ringGeom.cx, ringGeom.cy, ringGeom.r)} />
+          </defs>
+          <circle cx={ringGeom.cx} cy={ringGeom.cy} r={ringGeom.r}
+            fill="none" stroke="rgba(0,0,0,0.04)" strokeWidth={1} />
+          <text style={{
+            fontFamily: 'ui-serif, Georgia, "Palatino Linotype", serif',
+            fontSize: isMobile ? '13px' : 'clamp(13px, 1.4vw, 21px)',
+            letterSpacing: '0.03em',
+          }}>
+            <textPath ref={textPathRef} href="#lyric-ring-path" startOffset="0%" />
+          </text>
+        </svg>
+      )}
+    </div>
+  );
+
+  // ─── Music buttons (reusable) ─────────────────────────────────────────────
+  const musicButtons = (
+    <div className={isMobile
+      ? 'flex flex-col gap-2'
+      : 'hidden'
+    }>
+      {tracks.map(track => {
+        const isActive  = currentTrack.id === track.id;
+        const isPlaying_ = isActive && isPlaying;
+        return (
+          <button
+            key={track.id}
+            onClick={() => handleMusicClick(track.id)}
+            className="flex items-center gap-2 text-left group"
+          >
+            <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 border transition-all ${
+              isPlaying_ ? 'bg-black border-black' :
+              isActive   ? 'bg-white border-black' :
+                           'bg-white border-black/20'
+            }`} />
+            <span
+              className="font-sans uppercase tracking-widest select-none transition-colors"
+              style={{
+                fontSize: '10px',
+                color: isActive ? '#111' : '#aaa',
+                fontWeight: isActive ? 500 : 300,
+              }}
+            >
+              {isPlaying_ ? `▶ ${track.title}` : track.title}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // MOBILE LAYOUT
+  // ═══════════════════════════════════════════════════════════════════════════
+  if (isMobile) {
+    return (
+      <div className="min-h-screen bg-white text-black flex flex-col">
+
+        {/* Background graticule */}
+        <svg className="fixed inset-0 w-full h-full pointer-events-none z-0"
+          style={{ stroke: 'rgba(0,0,0,0.04)', strokeWidth: 1, fill: 'none' }}>
+          <ellipse cx="50%" cy="50%" rx="48%" ry="100%" />
+          <ellipse cx="50%" cy="50%" rx="30%" ry="100%" />
+          <line x1="0" y1="30%" x2="100%" y2="30%" />
+          <line x1="0" y1="50%" x2="100%" y2="50%" />
+          <line x1="0" y1="70%" x2="100%" y2="70%" />
+        </svg>
+
+        {/* ── NAME + SUBTITLE ── */}
+        <div className="relative z-10 px-6 pt-10 pb-2">
+          <h1 className="font-serif font-bold text-[2.4rem] leading-tight tracking-tight text-[#111]">
+            Man Singh Gurjar
+          </h1>
+          <p className="text-sm tracking-[0.2em] uppercase text-[#888] mt-1 font-sans">
+            A Head Full of Dreams
+          </p>
+        </div>
+
+        {/* ── GLOBE ROW: music left + globe right ── */}
+        <div className="relative z-10 flex items-stretch" style={{ height: '72vw' }}>
+
+          {/* Music buttons — left of globe */}
+          <div className="flex-shrink-0 flex flex-col justify-center gap-3 pl-6 pr-3"
+               style={{ width: '28vw' }}>
+            {tracks.map(track => {
+              const isActive   = currentTrack.id === track.id;
+              const isPlaying_ = isActive && isPlaying;
+              return (
+                <button
+                  key={track.id}
+                  onClick={() => handleMusicClick(track.id)}
+                  className="flex items-center gap-1.5 text-left"
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 border transition-all ${
+                    isPlaying_ ? 'bg-black border-black' :
+                    isActive   ? 'bg-white border-black' :
+                                 'bg-white border-black/20'
+                  }`} />
+                  <span className="font-sans uppercase select-none transition-colors leading-tight"
+                    style={{
+                      fontSize: '9px',
+                      letterSpacing: '0.12em',
+                      color: isActive ? '#111' : '#bbb',
+                      fontWeight: isActive ? 500 : 300,
+                    }}>
+                    {isPlaying_ && <span className="mr-0.5">▶</span>}
+                    {track.title}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Globe — fills remaining width */}
+          <div className="flex-1 relative">
+            {globeAndRing}
+          </div>
+        </div>
+
+        {/* ── ALBUM LIST ── */}
+        <div className="relative z-10 px-6 pt-4 pb-24">
+          <ul className="flex flex-col gap-3">
+            {locations.map(album => (
+              <li key={album.id}>
+                <Link
+                  href={`/places/${album.slug}`}
+                  className="text-[#555] hover:text-black transition-colors text-lg font-sans
+                             flex items-center gap-2 group"
+                >
+                  <span className="w-0 h-px bg-red-600 transition-all group-hover:w-3" />
+                  {album.title}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        {/* Footer */}
+        <div className="fixed bottom-3 right-4 z-50 text-[#bbb] text-[10px] tracking-widest font-sans pointer-events-none">
+          &copy; {new Date().getFullYear()}
+        </div>
+      </div>
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // DESKTOP LAYOUT
+  // ═══════════════════════════════════════════════════════════════════════════
   return (
     <section className="fixed inset-0 bg-white text-black overflow-hidden flex">
 
@@ -268,12 +429,17 @@ export default function GlobeComponent({ albums }: { albums: Album[] }) {
       </svg>
 
       {/* LEFT COLUMN */}
-      <div className="relative z-50 w-[44vw] md:w-[38vw] lg:w-[36vw] max-w-[540px] flex-shrink-0
-                      flex flex-col justify-center pl-[8vw] pr-6 pointer-events-none">
-        <h1 className="font-bold mb-10 sm:mb-16 text-4xl md:text-5xl lg:text-6xl font-serif
-                       tracking-tight text-[#111] pointer-events-auto whitespace-nowrap">
-          {siteConfig.siteName}
-        </h1>
+      <div className="relative z-50 w-[44vw] md:w-[38vw] lg:w-[36vw] max-w-[540px]
+                      flex-shrink-0 flex flex-col justify-center pl-[8vw] pr-6 pointer-events-none">
+        <div className="mb-10 sm:mb-14">
+          <h1 className="font-bold text-4xl md:text-5xl lg:text-6xl font-serif tracking-tight
+                         text-[#111] pointer-events-auto whitespace-nowrap">
+            {siteConfig.siteName}
+          </h1>
+          <p className="text-xs tracking-[0.25em] uppercase text-[#999] mt-2 font-sans pointer-events-auto">
+            A Head Full of Dreams
+          </p>
+        </div>
         <ul className="flex flex-col gap-2 text-xl md:text-2xl lg:text-3xl font-sans pointer-events-auto">
           {locations.map(album => (
             <li key={album.id} className="group"
@@ -290,89 +456,7 @@ export default function GlobeComponent({ albums }: { albums: Album[] }) {
 
       {/* GLOBE + LYRIC RING */}
       <div className="absolute inset-0 z-10 pointer-events-none" style={{ left: '28vw' }}>
-        <div ref={containerRef} className="absolute inset-0">
-
-          {/* Globe canvas */}
-          <div className="absolute inset-0 pointer-events-auto" style={{ zIndex: 20 }}>
-            {globeSize.width > 0 && (
-              <GlobeGL
-                ref={globeEl as any}
-                width={globeSize.width}
-                height={globeSize.height}
-                rendererConfig={{ antialias: true, alpha: true }}
-                animateIn={false}
-                backgroundColor="rgba(0,0,0,0)"
-                showGlobe={false}
-                showAtmosphere={false}
-                showGraticules={false}
-                polygonsData={landPolygons}
-                polygonCapMaterial={polyMat}
-                polygonsTransitionDuration={0}
-                polygonAltitude={() => 0}
-                polygonSideColor={() => 'rgba(255,255,255,0)'}
-                polygonStrokeColor={() => '#444'}
-                pointsData={locations.map(a => ({ lat: a.lat!, lng: a.lng! }))}
-                pointColor={() => '#cc0000'}
-                pointAltitude={0.01}
-                pointRadius={0.18}
-                pointsMerge={true}
-                ringsData={rings}
-                ringColor={() => arcInterp}
-                ringMaxRadius="maxR"
-                ringPropagationSpeed="propagationSpeed"
-                ringRepeatPeriod="repeatPeriod"
-                arcsData={arcs}
-                arcColor={() => '#cc0000'}
-                arcDashLength={0.4}
-                arcDashGap={0.2}
-                arcDashAnimateTime={2500}
-              />
-            )}
-          </div>
-
-          {/* SINGLE LYRIC RING — SVG overlay, zIndex 25 (in front of globe) */}
-          {ringGeom.r > 0 && (
-            <svg
-              ref={svgRef}
-              className="absolute inset-0 pointer-events-none"
-              width={globeSize.width}
-              height={globeSize.height}
-              style={{ zIndex: 25, overflow: 'visible' }}
-            >
-              <defs>
-                <path
-                  id="lyric-ring-path"
-                  d={ringPath(ringGeom.cx, ringGeom.cy, ringGeom.r)}
-                />
-              </defs>
-
-              {/* Debug ring outline (very faint) */}
-              <circle
-                cx={ringGeom.cx}
-                cy={ringGeom.cy}
-                r={ringGeom.r}
-                fill="none"
-                stroke="rgba(0,0,0,0.04)"
-                strokeWidth={1}
-              />
-
-              <text
-                style={{
-                  fontFamily: 'ui-serif, Georgia, "Palatino Linotype", serif',
-                  fontSize: 'clamp(14px, 1.5vw, 22px)',
-                  letterSpacing: '0.03em',
-                }}
-              >
-                <textPath
-                  ref={textPathRef}
-                  href="#lyric-ring-path"
-                  startOffset="0%"
-                />
-              </text>
-            </svg>
-          )}
-
-        </div>
+        {globeAndRing}
       </div>
 
       {/* FOOTER */}
@@ -384,7 +468,7 @@ export default function GlobeComponent({ albums }: { albums: Album[] }) {
   );
 }
 
-function escapeXml(s: string) {
+function escXml(s: string) {
   return s
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')

@@ -29,7 +29,7 @@ export function MusicPlayer() {
   };
 
   return (
-    <div className="fixed bottom-7 left-0 right-0 z-50 flex items-center justify-center gap-6 md:gap-10 px-4 pointer-events-none">
+    <div className="fixed bottom-7 left-0 right-0 z-50 hidden md:flex items-center justify-center gap-6 md:gap-10 px-4 pointer-events-none">
       {tracks.map(track => {
         const isActive  = currentTrack.id === track.id;
         const isPlaying_ = isActive && isPlaying;
