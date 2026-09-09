@@ -12,10 +12,10 @@ export interface Track {
 }
 
 export const TRACKS: Track[] = [
-  { id: 'sparks',         title: 'Sparks',           youtubeId: 'Ar48yzjn1PE', lyrics: sparksLyrics },
-  { id: 'baroon',         title: 'Baroon / Banjara',  youtubeId: 'kyqJ_FId-_w', lyrics: baroonLyrics },
-  { id: 'arz-kiya-hai',   title: 'Arz Kiya Hai',      youtubeId: 'up3j1A3RPJI', lyrics: arzKiyaHaiLyrics },
-  { id: 'i-like-me',      title: 'I Like Me Better',  youtubeId: 'hLQl3WQQoQ0', lyrics: iLikeMeBetterLyrics },
+  { id: 'sparks',       title: 'Sparks',           youtubeId: 'xno6lesVMJc', lyrics: sparksLyrics },
+  { id: 'baroon',       title: 'Baroon',            youtubeId: 'kyqJ_FId-_w', lyrics: baroonLyrics },
+  { id: 'arz-kiya-hai', title: 'Arz Kiya Hai',      youtubeId: 'jKqCewZvECA', lyrics: arzKiyaHaiLyrics },
+  { id: 'i-like-me',    title: 'I Like Me Better',  youtubeId: 'a7fzkqLozwA', lyrics: iLikeMeBetterLyrics },
 ];
 
 interface MusicContextValue {

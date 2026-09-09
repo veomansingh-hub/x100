@@ -1,98 +1,70 @@
 'use client';
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { useMusicContext } from '@/contexts/MusicContext';
-import { Music, Pause, Play, Volume2, VolumeX, ChevronDown, ChevronUp } from 'lucide-react';
 
 export function MusicPlayer() {
-  const { tracks, currentTrack, isPlaying, isMuted, switchTrack, togglePlay, toggleMute } = useMusicContext();
-  const [open, setOpen] = useState(false);
-  const panelRef = useRef<HTMLDivElement>(null);
+  const { tracks, currentTrack, isPlaying, switchTrack, togglePlay } = useMusicContext();
+  const hasInteracted = useRef(false);
 
-  // Close when clicking outside
+  // First interaction on the whole page starts music
   useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => {
-      if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
-        setOpen(false);
+    const handleFirstInteraction = () => {
+      if (!hasInteracted.current) {
+        hasInteracted.current = true;
       }
     };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [open]);
+    window.addEventListener('keydown', handleFirstInteraction, { once: true });
+    return () => window.removeEventListener('keydown', handleFirstInteraction);
+  }, []);
+
+  const handleClick = (trackId: string) => {
+    if (trackId === currentTrack.id) {
+      // Same song tapped → toggle pause/play
+      togglePlay();
+    } else {
+      // Different song tapped → switch and play
+      switchTrack(trackId);
+    }
+  };
 
   return (
-    <div
-      ref={panelRef}
-      className="fixed bottom-10 left-10 md:bottom-12 md:left-12 z-50 flex flex-col items-start gap-0"
-    >
-      {/* Expanded panel */}
-      <div
-        className="overflow-hidden transition-all duration-300 ease-in-out"
-        style={{ maxHeight: open ? '260px' : '0px', opacity: open ? 1 : 0 }}
-      >
-        <div className="bg-white/95 backdrop-blur border border-black/10 shadow-sm mb-2 p-4 min-w-[190px]">
-          <p className="text-[10px] tracking-[0.2em] uppercase text-black/40 mb-3 font-sans">Music</p>
+    <div className="fixed bottom-7 left-0 right-0 z-50 flex items-center justify-center gap-6 md:gap-10 px-4 pointer-events-none">
+      {tracks.map(track => {
+        const isActive  = currentTrack.id === track.id;
+        const isPlaying_ = isActive && isPlaying;
 
-          <ul className="flex flex-col gap-2 mb-4">
-            {tracks.map(track => (
-              <li key={track.id}>
-                <button
-                  onClick={() => { switchTrack(track.id); setOpen(false); }}
-                  className="flex items-center gap-2.5 w-full text-left group"
-                >
-                  <span className={`w-3 h-3 rounded-full border flex-shrink-0 transition-colors ${
-                    currentTrack.id === track.id
-                      ? 'bg-black border-black'
-                      : 'bg-white border-black/30 group-hover:border-black/60'
-                  }`} />
-                  <span className={`text-xs tracking-wide font-sans transition-colors ${
-                    currentTrack.id === track.id
-                      ? 'text-black font-medium'
-                      : 'text-black/50 group-hover:text-black/80'
-                  }`}>
-                    {track.title}
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ul>
-
-          <div className="flex items-center gap-3 pt-3 border-t border-black/8">
-            <button
-              onClick={togglePlay}
-              className="text-[10px] tracking-[0.15em] uppercase text-black/60 hover:text-black transition-colors font-sans flex items-center gap-1.5"
+        return (
+          <button
+            key={track.id}
+            onClick={() => handleClick(track.id)}
+            className="pointer-events-auto flex flex-col items-center gap-1 group"
+          >
+            {/* Playing indicator dot */}
+            <span
+              className="w-1 h-1 rounded-full transition-all duration-300"
+              style={{
+                backgroundColor: isPlaying_ ? '#000' : 'transparent',
+                transform: isPlaying_ ? 'scale(1)' : 'scale(0)',
+              }}
+            />
+            {/* Track name */}
+            <span
+              className="font-sans uppercase tracking-[0.18em] transition-all duration-200 select-none"
+              style={{
+                fontSize: 'clamp(9px, 0.9vw, 11px)',
+                color: isActive ? '#111' : '#b0b0b0',
+                fontWeight: isActive ? 500 : 300,
+                letterSpacing: isActive ? '0.20em' : '0.15em',
+                borderBottom: isActive ? '1px solid #111' : '1px solid transparent',
+                paddingBottom: '1px',
+              }}
             >
-              {isPlaying
-                ? <><Pause size={10} strokeWidth={2} /> Pause</>
-                : <><Play size={10} strokeWidth={2} /> Play</>
-              }
-            </button>
-            <button
-              onClick={toggleMute}
-              className="text-black/40 hover:text-black transition-colors"
-            >
-              {isMuted
-                ? <VolumeX size={12} strokeWidth={1.5} />
-                : <Volume2 size={12} strokeWidth={1.5} />
-              }
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* Collapsed trigger button */}
-      <button
-        onClick={() => setOpen(o => !o)}
-        className="flex items-center gap-2 text-[11px] tracking-[0.18em] uppercase font-sans text-black/40 hover:text-black/80 transition-colors group"
-      >
-        <Music size={11} strokeWidth={1.5} className="opacity-60 group-hover:opacity-100 transition-opacity" />
-        <span>{isPlaying ? currentTrack.title.toUpperCase() : 'PLAY MUSIC'}</span>
-        {open
-          ? <ChevronDown size={9} strokeWidth={2} className="opacity-40" />
-          : <ChevronUp size={9} strokeWidth={2} className="opacity-40" />
-        }
-      </button>
+              {isPlaying_ ? `— ${track.title} —` : track.title}
+            </span>
+          </button>
+        );
+      })}
     </div>
   );
 }
