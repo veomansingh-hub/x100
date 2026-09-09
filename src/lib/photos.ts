@@ -72,6 +72,19 @@ export function getAlbumCover(slug: string): string | null {
     if (coverFile) {
       return `/photos/${slug}/${coverFile}`;
     }
+
+    // Fallback to first image
+    const validPhotos = files
+      .filter(file => {
+        const ext = path.extname(file).toLowerCase();
+        return SUPPORTED_EXTENSIONS.includes(ext);
+      })
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+
+    if (validPhotos.length > 0) {
+      return `/photos/${slug}/${validPhotos[0]}`;
+    }
+
   } catch (err) {
     console.error(`Error reading cover in ${directoryPath}:`, err);
   }

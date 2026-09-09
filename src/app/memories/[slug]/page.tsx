@@ -1,10 +1,10 @@
-import { albums } from '@/data/albums';
+import { getAlbums } from '@/data/albums';
 import { notFound } from 'next/navigation';
 import { getAlbumPhotos } from '@/lib/photos';
 import { AlbumContainer } from '@/components/AlbumContainer';
 
 export async function generateStaticParams() {
-  return albums
+  return getAlbums()
     .filter((a) => a.type === 'memory')
     .map((album) => ({
       slug: album.slug,
@@ -13,7 +13,7 @@ export async function generateStaticParams() {
 
 export default async function MemoryAlbumPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
-  const album = albums.find((a) => a.slug === slug && a.type === 'memory');
+  const album = getAlbums().find((a) => a.slug === slug && a.type === 'memory');
 
   if (!album) {
     notFound();

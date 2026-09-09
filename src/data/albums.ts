@@ -1,3 +1,6 @@
+import fs from 'fs';
+import path from 'path';
+
 export type AlbumType = 'location' | 'memory';
 
 export interface Album {
@@ -9,14 +12,13 @@ export interface Album {
   type: AlbumType;
   lat?: number;
   lng?: number;
+  status?: 'active' | 'dream' | 'future';
 }
 
-export const albums: Album[] = [
-
+const ALBUM_METADATA: Partial<Album>[] = [
   {
-    id: "nashik",
-    title: "Nashik",
     slug: "nashik",
+    title: "Nashik",
     date: "Recent",
     description: "Cities, Towns & Villages",
     type: "location",
@@ -24,9 +26,8 @@ export const albums: Album[] = [
     lng: 73.7898
   },
   {
-    id: "mahabaleshwar",
-    title: "Mahabaleshwar",
     slug: "mahabaleshwar",
+    title: "Mahabaleshwar",
     date: "Recent",
     description: "Cities, Towns & Villages",
     type: "location",
@@ -34,9 +35,8 @@ export const albums: Album[] = [
     lng: 73.6477
   },
   {
-    id: "old-mahabaleshwar",
-    title: "Old Mahabaleshwar",
     slug: "old-mahabaleshwar",
+    title: "Old Mahabaleshwar",
     date: "Recent",
     description: "Cities, Towns & Villages",
     type: "location",
@@ -44,9 +44,8 @@ export const albums: Album[] = [
     lng: 73.6551
   },
   {
-    id: "gureghar",
-    title: "Gureghar",
     slug: "gureghar",
+    title: "Gureghar",
     date: "Recent",
     description: "Cities, Towns & Villages",
     type: "location",
@@ -54,9 +53,8 @@ export const albums: Album[] = [
     lng: 73.7381
   },
   {
-    id: "verul",
-    title: "Verul",
     slug: "verul",
+    title: "Verul",
     date: "Recent",
     description: "Cities, Towns & Villages",
     type: "location",
@@ -64,9 +62,8 @@ export const albums: Album[] = [
     lng: 75.1780
   },
   {
-    id: "ancient-temples-verul",
-    title: "Ancient temples of Verul",
-    slug: "ancient-temples-verul",
+    slug: "kailasha",
+    title: "Kailasha",
     date: "Recent",
     description: "Monuments & Temples",
     type: "location",
@@ -74,9 +71,8 @@ export const albums: Album[] = [
     lng: 75.1771
   },
   {
-    id: "temples-old-mahabaleshwar",
+    slug: "temples-located-in-old-mahabaleshwar",
     title: "Temples located in Old Mahabaleshwar",
-    slug: "temples-old-mahabaleshwar",
     date: "Recent",
     description: "Monuments & Temples",
     type: "location",
@@ -84,29 +80,83 @@ export const albums: Album[] = [
     lng: 73.6550
   },
   {
-    id: "koyna-wildlife",
-    title: "Koyna Wildlife Sanctuary",
     slug: "koyna-wildlife",
+    title: "Koyna Wildlife Sanctuary",
     date: "Recent",
     description: "Nature & Wildlife",
     type: "location",
     lat: 17.3833,
-    lng: 73.7333
+    lng: 73.7333,
+    status: 'dream'
   },
   {
-    id: "us",
-    title: "Us ❤️",
+    slug: "nagpur",
+    title: "Nagpur",
+    date: "Recent",
+    description: "Cities, Towns & Villages",
+    type: "location",
+    lat: 21.1458,
+    lng: 79.0882
+  },
+  {
+    slug: "trimbekshwar",
+    title: "Trimbekshwar",
+    date: "Recent",
+    description: "Monuments & Temples",
+    type: "location",
+    lat: 19.9406,
+    lng: 73.5312
+  },
+  {
     slug: "us",
+    title: "Us ❤️",
     date: "Always",
     description: "Favorite moments together",
     type: "memory"
   },
   {
-    id: "birthdays",
-    title: "Birthdays",
     slug: "birthdays",
+    title: "Birthdays",
     date: "Various",
     description: "Celebrations",
     type: "memory"
   }
 ];
+
+export function getAlbums(): Album[] {
+  const photosDir = path.join(process.cwd(), 'public', 'photos');
+  let activeFolders: string[] = [];
+  try {
+    activeFolders = fs.readdirSync(photosDir).filter(f => !f.startsWith('.'));
+  } catch (e) {
+    console.error("Could not read photos directory", e);
+  }
+
+  const generatedAlbums: Album[] = [];
+
+  for (const folder of activeFolders) {
+    const meta = ALBUM_METADATA.find(m => m.slug === folder) || {};
+    
+    generatedAlbums.push({
+      id: meta.slug || folder,
+      slug: folder,
+      title: meta.title || folder.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' '),
+      date: meta.date || "Recent",
+      description: meta.description || "Photos",
+      type: meta.type || "location",
+      lat: meta.lat,
+      lng: meta.lng,
+      status: 'active'
+    });
+  }
+
+  for (const meta of ALBUM_METADATA) {
+    if (meta.status === 'dream' || meta.status === 'future') {
+      if (!generatedAlbums.find(a => a.slug === meta.slug)) {
+        generatedAlbums.push(meta as Album);
+      }
+    }
+  }
+
+  return generatedAlbums;
+}

@@ -1,11 +1,11 @@
-import { albums } from '@/data/albums';
+import { getAlbums } from '@/data/albums';
 import Link from 'next/link';
 import Image from 'next/image';
 import { getAlbumCover } from '@/lib/photos';
 import { Navigation } from '@/components/Navigation';
 
 export default function MemoriesPage() {
-  const memoryAlbums = albums.filter((a) => a.type === 'memory');
+  const memoryAlbums = getAlbums().filter((a) => a.type === 'memory');
 
   return (
     <>
